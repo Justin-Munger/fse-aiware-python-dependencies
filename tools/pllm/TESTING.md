@@ -22,19 +22,21 @@
 
 ## Option A: Full test with Docker Compose (recommended)
 
-From the **repository root**:
+**Start from the repository root** (the folder that contains `tools/`, e.g. `fse-aiware-python-dependencies`). If you're elsewhere, run:
+   ```bash
+   cd /path/to/fse-aiware-python-dependencies
+   ```
 
-1. **Create `.env` in `tools/pllm`** (from the host):
+1. **Create `.env` in `tools/pllm`** (run these from the repo root):
    ```bash
    cd tools/pllm
-   echo "USER=$(whoami)" >> .env
+   echo "USER=$(whoami)" > .env
    echo "UID=$(id -u)" >> .env
    echo "GID=$(id -g)" >> .env
-   # Linux:
-   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
-   # macOS:
-   echo "DOCKER_GID=$(stat -f '%g' /var/run/docker.sock)" >> .env
+   # Works on both macOS and Linux:
+   echo "DOCKER_GID=$(stat -f '%g' /var/run/docker.sock 2>/dev/null || stat -c '%g' /var/run/docker.sock)" >> .env
    ```
+   If you get "No such file or directory", you're not in the repo root—run `cd` to the repo root first, then run the block again. If Docker isn't installed or the socket is missing, create `.env` without the last line and set `DOCKER_GID=999` for now.
 
 2. **Build and start** (Ollama + PLLM container):
    ```bash
