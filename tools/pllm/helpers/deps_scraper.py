@@ -1,4 +1,5 @@
 # # Get all the python files in a project
+import ast
 import os
 import sys
 import importlib.util
@@ -137,6 +138,32 @@ class DepsScraper():
                 else:
                     if not self.is_module_in_standard_library(dep):
                         imports = self.append_to_list(imports, dep)
+        return imports
+
+    """
+    Extract import names from a Python file using AST (source of truth for imports).
+    Returns a list of top-level module names (e.g. 'import x' -> x, 'from x.y import z' -> x).
+    Does not filter stdlib; use clean_deps() afterward.
+    """
+    def extract_imports_ast(self, file_path):
+        imports = []
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.name.split('.')[0]
+                        if name and name not in imports:
+                            imports.append(name)
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        name = node.module.split('.')[0]
+                        if name and name not in imports:
+                            imports.append(name)
+        except (SyntaxError, FileNotFoundError) as e:
+            if self.logging:
+                print(f"AST import extraction failed for {file_path}: {e}")
         return imports
 
     # Looks for specific words in an file

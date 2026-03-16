@@ -4,12 +4,13 @@ import argparse
 import json
 import time
 import multiprocessing as mp
-from multiprocessing import Process
+from multiprocessing import Process, Event
 
 from helpers.ollama_helper_tester import OllamaHelper
 from helpers.py_pi_query import PyPIQuery
 from helpers.build_dockerfile import DockerHelper
 from helpers.deps_scraper import DepsScraper
+from resolution_graph import run_resolution_graph
 
 class TestExecutor():
 
@@ -131,135 +132,37 @@ class TestExecutor():
     # Main docker process loop
     # This method is given as a process to run in parallel with each other
     # Handles the main loop of building | running | validating
-    def docker_create_process(self, ollama_helper, llm_eval, file, process_num):
-        # Create the YAML file in the same folder as the snippet
-        dockerHelper = DockerHelper(logging=True)
-
-        # Get a set of modules, based on the evaluation
-        # Also pull down working versions from PyPi at the same time.
-        llm_eval = self.get_module_specifics(ollama_helper, llm_eval)
-
-        print(llm_eval)
-
-        # Dictionary to store erroring module versions and keep a list of error types
-        error_handler = {
-            'previous': '',
-            'error_modules': {},
-            'ImportError': 0,
-            'ModuleNotFound': 0,
-            'VersionNotFound': 0,
-            'DependencyConflict': 0,
-            'AttributeError': 0,
-            'NonZeroCode': 0,
-            'SyntaxError': 0,
-        }
-
-        # Get the project folder so we can write out our data file
-        project_dir, dir_name, project_file = dockerHelper.get_project_dir(file)
-        # File to open is unique based on the python version
-        file_to_open = f"{project_dir}/output_data_{llm_eval['python_version']}.yml"
-
-        # Output to the log file
-        output_file = open(file_to_open, "a")
-        output_file.write('---\n')
-        output_file.write(f"python_version: {llm_eval['python_version']}\n")
-        output_file.write(f"start_time: {self.start_time}\n")
-        output_file.write('iterations:\n')
-        output_file.close()
-        # Build loop
-        run_complete = False
-        build_complete = False
-        # job_complete = False
-        loop = 1
-        error_type = 'Unknown'  # Initialize error_type to avoid UnboundLocalError
-
-        while not run_complete:
-            error = ''
-            try:
-                print(f"In process {process_num}")
-                # time.sleep(5)
-                # Main build loop
-                while not build_complete:
-                    # Build the container and report any error that may occur during the build
-                    # Returns if the build completed, docker output (error), output (details from the LLM) and the error type
-                    build_complete, docker_output, output, error_type = self.build_container(dockerHelper, ollama_helper, llm_eval, file, error_handler)
-                    # If the build failed, handle the error
-                    if not build_complete:
-                        # Update error_handler with any failing module and version
-                        error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                        # Update the LLM details with the information from the build ouput
-                        llm_eval = self.update_llm_eval(output, llm_eval)
-                        # If we had an import error, and a non zero code, then we may have an ordering issue and need to reshuffle the modules
-                        if error_type == 'ImportError' and 'returned a non-zero code: 1' in docker_output:
-                            zero_code_module = ollama_helper.non_zero_error(docker_output)
-                            llm_eval = self.shuffle_modules(output['module'], zero_code_module, llm_eval)
-                        # Given a Non Zero and PATH environment in the output, remove this module as it may be completely erroneous
-                        if error_type == 'NonZeroCode' and 'PATH environment' in docker_output:
-                            llm_eval['python_modules'].pop(output['module'])
-                        # Update the loop number and log the details to the log file
-                        loop = self.end_test(file_to_open, llm_eval, dockerHelper, error_type, docker_output, loop, False)
-
-                # while not run_complete:
-                docker_output = dockerHelper.run_container_test()
-                print(docker_output)
-
-                # Processes Docker run information (after a build has been successul we must run it to see if everything is correct)
-                output, error_type = ollama_helper.process_error(docker_output, error_handler, llm_eval)
-                
-                # Direct the flow to the correct error logging method
-                if 'ImportError' in error_type:
-                    if 'DJANGO_SETTINGS_MODULE is undefined' in docker_output:
-                        run_complete = True
-                        llm_eval = self.update_llm_eval(output, llm_eval)
-                    else:
-                        build_complete = False
-                        error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                        llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'VersionNotFound' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'DependencyConflict' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'ModuleNotFound' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'AttributeError' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'InvalidVersion' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'NonZeroCode' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    if output['module'] in llm_eval['python_modules']:
-                        llm_eval['python_modules'].pop(output['module'])
-                elif 'SyntaxError' in error_type:
-                    build_complete = False
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'NameError' in error_type:
-                    run_complete = True
-                    error_handler = self.naughty_bois(output, error_handler, error_type, llm_eval)
-                    llm_eval = self.update_llm_eval(output, llm_eval)
-                elif 'None' in error_type:
-                    run_complete = True
-                    llm_eval = self.update_llm_eval(None, llm_eval)
-            except Exception as e:
-                print(f"Failed to build container: {e}")
-            # Update the loop number and log the details to the log file
-            loop = self.end_test(file_to_open, llm_eval, dockerHelper, error_type, docker_output, loop, run_complete)
-        
-        # If we've left the while loop then we need to make sure everything is killed correctly
-        loop = self.end_loop
-        # Update the loop number and log the details to the log file
-        self.end_test(file_to_open, llm_eval, dockerHelper, error_type, docker_output, loop, True)
+    # success_event: when set by another process, this process exits early to save time/VRAM
+    def docker_create_process(self, ollama_helper, llm_eval, file, process_num, success_event=None):
+        # LangGraph-based resolution: resolve_versions -> build -> run -> handle_error (with cycles)
+        if success_event is not None and success_event.is_set():
+            return
+        try:
+            final_state = run_resolution_graph(
+                executor=self,
+                ollama_helper=ollama_helper,
+                llm_eval=llm_eval,
+                file_path=file,
+                process_num=process_num,
+                success_event=success_event,
+            )
+        except Exception as e:
+            print(f"Resolution graph failed: {e}")
+            raise
+        if success_event is not None and success_event.is_set():
+            docker_helper = final_state.get("docker_helper")
+            if docker_helper:
+                docker_helper.delete_container()
+                docker_helper.delete_image()
+            exit(0)
+        file_to_open = final_state.get("file_to_open")
+        llm_eval = final_state.get("llm_eval")
+        docker_helper = final_state.get("docker_helper")
+        error_type = final_state.get("error_type", "Unknown")
+        docker_output = final_state.get("docker_output", "")
+        loop = final_state.get("loop", self.end_loop)
+        if file_to_open and llm_eval and docker_helper:
+            self.end_test(file_to_open, llm_eval, docker_helper, error_type, docker_output, loop, True)
 
     # Logging specific, ensures correct spaces in log file to avoid later errors
     def ensure_8_spaces(self, line):
@@ -354,9 +257,9 @@ def main():
 
     # Create the main 
     testExecutor = TestExecutor(base_url=args.base, model=args.model, logging=True, temp=args.temp, end_loop=args.loop, search_range=args.range, base_modules=file_path+"/modules")
-    # Use a simple search to grab imports from file without the LLM
-    python_deps = []
-    if args.rag:
+    # AST-based import extraction (source of truth) + optional grep fallback
+    python_deps = testExecutor.deps.extract_imports_ast(args.file)
+    if not python_deps and args.rag:
         python_deps = testExecutor.deps.find_word_in_file(args.file, 'import', [])
 
     # Loop to ensure we handle invalid responses from the model
@@ -395,6 +298,7 @@ def main():
     if not python_versions:
         python_versions = testExecutor.pypi.get_python_range(python_version=llm_eval['python_version'], range=testExecutor.search_range)
     num_processes = (testExecutor.search_range * 2) + 1
+    success_event = mp.Event()
 
     processes = []
     
@@ -414,14 +318,14 @@ def main():
                 OllamaHelper(base_url=args.base, model=args.model, logging=True, temp=args.temp, base_modules=file_path+"/modules", rag=args.rag),
                 run_details,
                 args.file,
-                i)
+                i,
+                success_event)
             )
         processes.append(p)
         p.start()
 
-    # Wait for all processes to finish
+    # Wait for all processes to finish; when one succeeds it sets success_event and others exit
     for p in processes:
-        # Give the process 20 minutes to complete
         p.join(timeout=1200)
     
     for p in processes:

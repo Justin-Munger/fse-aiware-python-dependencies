@@ -4,6 +4,36 @@ import argparse
 import re
 
 from helpers.ollama_helper_base import OllamaHelperBase
+
+
+def parse_could_not_find_version_error(error_text):
+    """
+    Parse pip 'Could not find a version' / 'No matching distribution' error.
+    Returns dict with package, requested_version, available_versions (list) or None.
+    """
+    # e.g. "Could not find a version that satisfies the requirement djangorestframework==3.15.2 (from versions: 0.1, 0.1.1, ...)"
+    # or "No matching distribution found for pkg==1.2.3"
+    out = {}
+    match = re.search(r"requirement\s+([a-zA-Z0-9_-]+)==([^\s\)]+)\s*\(from versions:\s*([^\)]+)\)", error_text, re.I)
+    if match:
+        out["package"] = match.group(1).strip()
+        out["requested_version"] = match.group(2).strip()
+        vers = match.group(3).strip()
+        out["available_versions"] = [v.strip() for v in vers.split(",") if v.strip()]
+        return out
+    match = re.search(r"requirement\s+([a-zA-Z0-9_-]+)==([^\s\)]+)", error_text, re.I)
+    if match:
+        out["package"] = match.group(1).strip()
+        out["requested_version"] = match.group(2).strip()
+        out["available_versions"] = []
+        return out
+    match = re.search(r"No matching distribution found for\s+([a-zA-Z0-9_-]+)==([^\s\n]+)", error_text, re.I)
+    if match:
+        out["package"] = match.group(1).strip()
+        out["requested_version"] = match.group(2).strip()
+        out["available_versions"] = []
+        return out
+    return None
 from helpers.py_pi_query import PyPIQuery
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -230,31 +260,41 @@ class OllamaHelper(OllamaHelperBase):
 
 
     def could_not_find_version(self, error, previous_versions, details):
-        parser = JsonOutputParser(pydantic_object=Module)
-        get_module_prompt = PromptTemplate(
-                    template="Given a docker build error where a version could not be found:\n{error}\nIdentify the module causing the error, which is likely in the form 'from module_name==version'.\nReturn the just the name of the module using the format instructions.\n{format_instructions}",
-                    input_variables=[],
-                    partial_variables={"error": error, "format_instructions": parser.get_format_instructions()}
-                )
-        
-        # Generic method for handling a try loop for getting a module name
-        bad_module = self.generic_get_module_from_error(get_module_prompt, parser)
-        # If we failed to get a module then we return None
-        if bad_module == None: return bad_module
+        # Structured parse: extract package and available versions from pip error when possible
+        parsed = parse_could_not_find_version_error(error)
+        if parsed:
+            bad_module = self.pypi.check_module_name([parsed["package"]])
+            bad_module = bad_module[0] if bad_module else None
+            versions_from_error = parsed.get("available_versions") or []
+        else:
+            bad_module = None
+            versions_from_error = []
+
+        if not bad_module:
+            parser = JsonOutputParser(pydantic_object=Module)
+            get_module_prompt = PromptTemplate(
+                        template="Given a docker build error where a version could not be found:\n{error}\nIdentify the module causing the error, which is likely in the form 'from module_name==version'.\nReturn the just the name of the module using the format instructions.\n{format_instructions}",
+                        input_variables=[],
+                        partial_variables={"error": error, "format_instructions": parser.get_format_instructions()}
+                    )
+            bad_module = self.generic_get_module_from_error(get_module_prompt, parser)
+        if bad_module is None:
+            return None
 
         versions, error_modules = self.get_versions_previous_versions(bad_module, previous_versions, details)
+        # Prefer versions listed in the error message when available (pip tells us exactly what exists)
+        if versions_from_error:
+            versions = ", ".join(versions_from_error)
 
         parser = JsonOutputParser(pydantic_object=ModuleVersion)
 
         tp = "Given a could not find a version error for the '{module}' module:\n{error}\nInfer a possible working version for Python {python_version}.\nReturn the information with the format {format_instructions}, use None for version if no version could be found!"
         pv = {"module": bad_module, "error": error, "python_version": details['python_version'], "format_instructions": parser.get_format_instructions()}
         if self.rag:
-            tp = "Given a could not find a version error for the '{module}' module:\n{error}\nExcluding previous versions: ({previous_versions}), perform a distributed search over the recommended versions in the error message!\nReturn the information with the format {format_instructions}, use None for version if no version could be found!"
-            pv = {"module": bad_module, "error": error, "previous_versions": error_modules, "format_instructions": parser.get_format_instructions()}
+            tp = "The '{module}' module only has these versions available: {versions}. Excluding previous versions: ({previous_versions}). Pick one version from the available list and return it using the format {format_instructions}. Use None for version only if no version could be found!"
+            pv = {"module": bad_module, "error": error, "versions": versions, "previous_versions": error_modules, "format_instructions": parser.get_format_instructions()}
 
         get_version_prompt = PromptTemplate(
-                # template="Given a set of versions from oldest to newest ({versions}) for the '{module}' module. Perform a distributed search to retrieve a new version, excluding previously used versions ({previous_versions}).\nReturn the information with the format {format_instructions}",
-                # template="Given a could not find a version error for the '{module}' module:\{error}\nFrom the error message and excluding previous versions: ({previous_versions}), locate and select a random version, which would be in the form 'from versions: version'. \nReturn the information with the format {format_instructions} using None as version if no version was found.",
                 template=tp,
                 input_variables=[],
                 partial_variables=pv

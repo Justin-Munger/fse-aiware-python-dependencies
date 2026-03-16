@@ -72,9 +72,10 @@ class DockerHelper():
 
         self.dockerfile_out += f"""# Add install commands for all of the python modules\n"""
         self.dockerfile_out += f"""RUN ["pip","install","--upgrade","pip"]\n"""
-        # Loop through the modules and add these to the docker file as pip installs
+        # Build a single RUN with all packages so pip can resolve transitive deps together
         python_modules = llm_out['python_modules']
         if self.logging: print(python_modules)
+        install_specs = []
         for module in python_modules:
             if type(module) == dict:
                 name = module['module']
@@ -82,13 +83,12 @@ class DockerHelper():
             else:
                 name = module
                 version = python_modules[module]
-
-            # if self.logging: print(type(data))
-            # if self.logging: print(data)
-            if type(version) == str:
-                self.dockerfile_out += f"""RUN ["pip","install","--trusted-host","pypi.python.org","--default-timeout=100","{name}=={version}"]\n"""
-            else:
-                self.dockerfile_out += f"""RUN ["pip","install","--trusted-host","pypi.python.org","--default-timeout=100","{name}=={version[0]}"]\n"""
+            ver_str = version if type(version) == str else version[0]
+            install_specs.append(f"{name}=={ver_str}")
+        # Single RUN: correct --default-timeout and 100 as separate args; one pip install for all packages
+        if install_specs:
+            pkgs = '","'.join(install_specs)
+            self.dockerfile_out += f"""RUN ["pip","install","--trusted-host","pypi.python.org","--default-timeout","100","{pkgs}"]\n"""
 
         # Copys the snippet to the app dir for running
         self.dockerfile_out += f"""# Copy the specified directory to /app\n"""
