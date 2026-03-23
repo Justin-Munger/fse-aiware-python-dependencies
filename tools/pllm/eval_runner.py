@@ -72,28 +72,40 @@ def parse_output_file(path: str) -> Dict[str, str]:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
 
-    py_match = re.search(r"^python_version:\s*(.+)$", text, flags=re.MULTILINE)
+    py_match = re.search(r"^\s*python_version:\s*(.+)$", text, flags=re.MULTILINE)
     if py_match:
         out["python_version"] = py_match.group(1).strip()
 
-    all_errors = re.findall(r"^\s*-\s*error_type:\s*(.+)$", text, flags=re.MULTILINE)
+    # Support both "- error_type: X" and "error_type: X"
+    all_errors = re.findall(r"^\s*(?:-\s*)?error_type:\s*(.+)$", text, flags=re.MULTILINE)
     if all_errors:
         out["last_error_type"] = all_errors[-1].strip()
 
-    tt_match = re.search(r"^total_time:\s*(.+)$", text, flags=re.MULTILINE)
+    tt_match = re.search(r"^\s*total_time:\s*(.+)$", text, flags=re.MULTILINE)
     if tt_match:
         out["total_time"] = tt_match.group(1).strip()
 
     return out
 
 
-def get_latest_output_file(snippet_dir: str, started_at: float) -> Optional[str]:
+def snapshot_output_mtimes(snippet_dir: str) -> Dict[str, float]:
+    mtimes: Dict[str, float] = {}
+    for name in os.listdir(snippet_dir):
+        if name.startswith("output_data_") and name.endswith(".yml"):
+            full = os.path.join(snippet_dir, name)
+            mtimes[full] = os.path.getmtime(full)
+    return mtimes
+
+
+def get_latest_output_file(snippet_dir: str, started_at: float, before_mtimes: Dict[str, float]) -> Optional[str]:
     candidates: List[Tuple[float, str]] = []
     for name in os.listdir(snippet_dir):
         if name.startswith("output_data_") and name.endswith(".yml"):
             full = os.path.join(snippet_dir, name)
             mtime = os.path.getmtime(full)
-            if mtime >= started_at - 1.0:
+            previous = before_mtimes.get(full, -1.0)
+            # Prefer files created/modified by this run
+            if mtime > previous + 1e-6 or mtime >= started_at - 1.0:
                 candidates.append((mtime, full))
     if not candidates:
         return None
@@ -128,6 +140,7 @@ def main():
         print(f"[{idx}/{len(snippets)}] Running {snippet_id}")
 
         started_at = time.time()
+        before_mtimes = snapshot_output_mtimes(snippet_dir)
         cmd = [
             args.python_bin,
             os.path.join(script_dir, "test_executor.py"),
@@ -161,7 +174,7 @@ def main():
             return_code = 124
 
         elapsed = round(time.time() - started_at, 3)
-        output_file = get_latest_output_file(snippet_dir, started_at)
+        output_file = get_latest_output_file(snippet_dir, started_at, before_mtimes)
         parsed = parse_output_file(output_file) if output_file else {
             "python_version": "",
             "last_error_type": "",
