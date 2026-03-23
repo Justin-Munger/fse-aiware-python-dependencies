@@ -129,6 +129,36 @@ Inside the container, run the same `python test_executor.py ...` command as in O
 
 ---
 
+## Batch evaluation with CSV (improved pipeline)
+
+Use `eval_runner.py` to run the improved `test_executor` (which uses `resolution_graph.py`) across many snippets and export a CSV.
+
+From `tools/pllm`:
+
+```bash
+python eval_runner.py \
+  -g "/path/to/hard-gists" \
+  -o "./eval_results.csv" \
+  -m gemma2 \
+  -b "http://localhost:11434" \
+  -l 5 -r 0 --rag true --limit 50
+```
+
+CSV columns:
+- `snippet_id`, `snippet_file`, `output_file`
+- `python_version`
+- `last_error_type`
+- `total_time` (from output YAML when present)
+- `success` (true when `last_error_type == None`)
+- `return_code`, `elapsed_sec`
+
+Notes:
+- `-g` must point to the root folder that contains `<id>/snippet.py`.
+- `--limit 0` means run all snippets.
+- This runner uses your current Python interpreter (`sys.executable`) unless you pass `--python_bin`.
+
+---
+
 ## Troubleshooting
 
 - **Docker permission denied**: Ensure the socket GID in `.env` matches `stat -c '%g' /var/run/docker.sock` (Linux) or `stat -f '%g' /var/run/docker.sock` (macOS). See `tools/pllm/DOCKER_SETUP.md`.
