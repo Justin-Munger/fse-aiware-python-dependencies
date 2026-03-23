@@ -1,0 +1,11 @@
+---
+python_version: 3.8
+start_time: 1774293347.484985
+iterations:
+  iteration_1:
+    - python_module: {'appindicator': '0.12', 'gtk': '4.0', 'urllib2': '2.7'}
+    - error_type: VersionNotFound
+    - error: |
+        \u001b[91mERROR Could not find a version that satisfies the requirement appindicator==0.12 (from versions none)\n\u001b[0m"}
+        \u001b[91mERROR No matching distribution found for appindicator==0.12\n\u001b[0m"}
+        {"errorDetail"{"code"1,"message""The command 'pip install --trusted-host pypi.python.org --default-timeout 100 appindicator==0.12 gtk==4.0 urllib2==2.7' returned a non-zero code 1"},"error""The command 'pip install --trusted-host pypi.python.org --default-timeout 100 appindicator==0.12 gtk==4.0 urllib2==2.7' returned a non-zero code 
