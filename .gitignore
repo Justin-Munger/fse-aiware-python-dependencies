@@ -165,3 +165,8 @@ dev/mlx-examples/
     
 Pipfile.lock
 GithubProjects/
+
+# Generated evaluation artifacts (machine-specific)
+tools/pllm/eval_results*.csv
+tools/pllm/*_results*.csv
+tools/pllm/**/output_data_*.yml

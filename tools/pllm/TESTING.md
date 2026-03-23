@@ -159,6 +159,19 @@ Notes:
 
 ---
 
+## Environment parity check (recommended before team runs)
+
+Use this before running `eval_runner.py` on another machine:
+
+```bash
+cd tools/pllm
+python env_check.py --gists_root "../../hard-gists" --ollama_base "http://localhost:11434"
+```
+
+If any check fails (`docker`, `ollama`, or `gists_root`), fix that first.
+
+---
+
 ## Troubleshooting
 
 - **Docker permission denied**: Ensure the socket GID in `.env` matches `stat -c '%g' /var/run/docker.sock` (Linux) or `stat -f '%g' /var/run/docker.sock` (macOS). See `tools/pllm/DOCKER_SETUP.md`.
