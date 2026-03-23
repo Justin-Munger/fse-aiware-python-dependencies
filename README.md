@@ -39,9 +39,18 @@ Papers should describe their approach and evaluate using PLLM as a baseline, usi
 ## Tools
 
 ### Baseline System Overview
-In this repository, we have supplied the PLLM tool to serve as a reference point. This tool implements a RAG pipeline and guided prompting to search for working dependencies. The field of Agentic engineering has evolved rapidly since the initial conception of PLLM, leaving great scope for advancement.
+In this repository, we provide PLLM as a baseline **agentic framework** for Python dependency resolution. The system is not a single monolithic prompt, but a coordinated set of specialized agents that operate in a closed feedback loop to propose, test, and revise dependency fixes.
 
-Participants are envouraged to build upon and improve the baseline approach; [PLLM]() (5-stage RAG+LLM pipeline): extract dependencies → Docker build → error log analysis → generate specs → validate → iterate.
+PLLM structures dependency resolution as an **agentic pipeline** where each stage has a clear role and handoff:
+- **Dependency Extraction Agent**: identifies imports and candidate package requirements from the snippet.
+- **Build/Execution Agent**: runs the snippet in Docker and captures deterministic execution traces.
+- **Log Analysis Agent**: interprets build/runtime errors and maps failures to likely package/version root causes.
+- **Specification Synthesis Agent**: proposes a concrete dependency specification (and Python version when needed).
+- **Validation Agent**: re-runs the build with the proposed fix and reports success/failure signals.
+
+These agents are connected through an iterative controller loop: extract -> execute -> analyze -> propose -> validate -> re-plan. This explicitly agentic design enables targeted reasoning, modular improvements, and easier substitution of better models/tools per agent role.
+
+Participants are encouraged to build on and improve this baseline agentic architecture and demonstrate stronger planning, memory use, and adaptation strategies under the competition constraints.
 
 ### Dataset
 HG2.9K (2,900+ Python files with hard conflicts). **Constraints**: Docker environment, 10GB VRAM limit. Independent evaluation on held-out dataset for final tool results during the event.

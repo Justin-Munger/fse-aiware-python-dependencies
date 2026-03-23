@@ -17,10 +17,15 @@ from helpers.build_dockerfile import DockerHelper
 
 class ResolutionState(TypedDict, total=False):
     llm_eval: dict
+    parsed_imports: list
+    normalized_modules: list
     error_handler: dict
     docker_output: str
     output: Optional[dict]
     error_type: str
+    strategy: str
+    last_error_signature: str
+    stagnation_count: int
     build_complete: bool
     run_complete: bool
     loop: int
@@ -63,23 +68,52 @@ def build_resolution_graph(
             return True
         return False
 
-    # ---- infer_python: already done in main(); pass state through ----
+    # ---- infer_python: infer from snippet when missing/incomplete ----
     def infer_python(state: ResolutionState) -> ResolutionState:
         if _check_success_event():
             return {"run_complete": True}
-        return {}
+        llm_eval = dict(state.get("llm_eval", {}))
+        if "python_version" in llm_eval and "python_modules" in llm_eval and llm_eval["python_modules"]:
+            return {"llm_eval": llm_eval}
+        try:
+            inferred = executor.evaluate_file(ollama_helper, file_path)
+            if "python_version" in inferred:
+                inferred["python_version"] = str(inferred["python_version"])
+            if isinstance(inferred.get("python_modules"), dict):
+                inferred["python_modules"] = list(inferred["python_modules"].keys())
+            return {"llm_eval": inferred}
+        except Exception:
+            # Conservative fallback if inference fails
+            if "python_version" not in llm_eval:
+                llm_eval["python_version"] = "3.8"
+            if "python_modules" not in llm_eval:
+                llm_eval["python_modules"] = []
+            return {"llm_eval": llm_eval}
 
-    # ---- parse_imports: already done in main(); pass state through ----
+    # ---- parse_imports: AST first, simple scan fallback ----
     def parse_imports(state: ResolutionState) -> ResolutionState:
         if _check_success_event():
             return {"run_complete": True}
-        return {}
+        imports = executor.deps.extract_imports_ast(file_path)
+        if not imports:
+            imports = executor.deps.find_word_in_file(file_path, "import", [])
+        return {"parsed_imports": imports}
 
-    # ---- normalize_modules: already done in main(); pass state through ----
+    # ---- normalize_modules: canonicalize package names and merge inferred+parsed ----
     def normalize_modules(state: ResolutionState) -> ResolutionState:
         if _check_success_event():
             return {"run_complete": True}
-        return {}
+        llm_eval = dict(state.get("llm_eval", {}))
+        parsed_imports = state.get("parsed_imports", [])
+        inferred_modules = llm_eval.get("python_modules", [])
+        if isinstance(inferred_modules, dict):
+            inferred_modules = list(inferred_modules.keys())
+        merged = parsed_imports + inferred_modules
+        normalized = executor.pypi.check_module_name(merged)
+        llm_eval["python_modules"] = normalized
+        if "python_version" not in llm_eval:
+            llm_eval["python_version"] = "3.8"
+        return {"llm_eval": llm_eval, "normalized_modules": normalized}
 
     # ---- query_py1: PyPI query + version files + docker_helper + log file init ----
     def query_py1(state: ResolutionState) -> ResolutionState:
@@ -105,6 +139,7 @@ def build_resolution_graph(
             "project_dir": project_dir,
             "dir_name": dir_name,
             "project_file": project_file,
+            "strategy": "build",
         }
 
     # ---- select_versions: LLM picks version per module (RAG) ----
@@ -177,6 +212,8 @@ def build_resolution_graph(
         error_type = state.get("error_type", "Unknown")
         docker_output = state.get("docker_output", "")
         loop = state.get("loop", 1)
+        if error_type not in error_handler:
+            error_handler[error_type] = 0
 
         run_complete = False
         # Build failure path: same as old handle_build_error
@@ -200,6 +237,7 @@ def build_resolution_graph(
                 "error_handler": error_handler,
                 "loop": loop_next,
                 "build_complete": False,
+                "strategy": "retry_build",
             }
 
         # Run failure path: same as old handle_run_error
@@ -261,13 +299,39 @@ def build_resolution_graph(
             "loop": loop_next,
             "run_complete": run_complete,
             "build_complete": False if not run_complete else state.get("build_complete", False),
+            "strategy": "finalize" if run_complete else "retry_build",
         }
 
-    # ---- decide_strategy: retry docker_build or go to finalize ----
+    # ---- decide_strategy: policy-based routing ----
     def decide_strategy(state: ResolutionState) -> ResolutionState:
         if _check_success_event():
-            return {}
-        return {}
+            return {"strategy": "finalize"}
+        if state.get("run_complete"):
+            return {"strategy": "finalize"}
+        loop = state.get("loop", 1)
+        if loop > end_loop:
+            return {"strategy": "finalize"}
+        error_type = state.get("error_type", "Unknown")
+        output = state.get("output")
+        module = output.get("module") if isinstance(output, dict) else ""
+        err_sig = f"{error_type}:{module}"
+        prev_sig = state.get("last_error_signature", "")
+        stagnation = state.get("stagnation_count", 0)
+        stagnation = (stagnation + 1) if err_sig == prev_sig else 0
+
+        # If we keep hitting the same error/module, force a refresh of available versions
+        if stagnation >= 2:
+            strategy = "requery"
+        elif error_type in ("DependencyConflict", "VersionNotFound"):
+            strategy = "requery"
+        else:
+            strategy = "retry_build"
+
+        return {
+            "strategy": strategy,
+            "last_error_signature": err_sig,
+            "stagnation_count": stagnation,
+        }
 
     # ---- finalize: wrap up (caller does end_test after graph; this node just marks done) ----
     def finalize(state: ResolutionState) -> ResolutionState:
@@ -286,12 +350,16 @@ def build_resolution_graph(
     def after_resolve_error(state: ResolutionState) -> Literal["decide_strategy"]:
         return "decide_strategy"
 
-    def after_decide_strategy(state: ResolutionState) -> Literal["generate_dockerfiles", "finalize"]:
+    def after_decide_strategy(state: ResolutionState) -> Literal["generate_dockerfiles", "query_py1", "finalize"]:
         if _check_success_event():
             return "finalize"
         if state.get("run_complete"):
             return "finalize"
         if state.get("loop", 0) > end_loop:
+            return "finalize"
+        if state.get("strategy") == "requery":
+            return "query_py1"
+        if state.get("strategy") == "finalize":
             return "finalize"
         return "generate_dockerfiles"
 
@@ -330,7 +398,7 @@ def build_resolution_graph(
     graph.add_conditional_edges("resolve_error", after_resolve_error, {"decide_strategy": "decide_strategy"})
     graph.add_conditional_edges(
         "decide_strategy", after_decide_strategy,
-        {"generate_dockerfiles": "generate_dockerfiles", "finalize": "finalize"},
+        {"generate_dockerfiles": "generate_dockerfiles", "query_py1": "query_py1", "finalize": "finalize"},
     )
     graph.add_conditional_edges("finalize", after_finalize, {"__end__": END})
 
@@ -353,10 +421,15 @@ def run_resolution_graph(
     error_handler = default_error_handler()
     initial_state: ResolutionState = {
         "llm_eval": llm_eval,
+        "parsed_imports": [],
+        "normalized_modules": [],
         "error_handler": error_handler,
         "docker_output": "",
         "output": None,
         "error_type": "Unknown",
+        "strategy": "build",
+        "last_error_signature": "",
+        "stagnation_count": 0,
         "build_complete": False,
         "run_complete": False,
         "loop": 1,
