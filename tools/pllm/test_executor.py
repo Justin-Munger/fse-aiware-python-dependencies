@@ -3,6 +3,8 @@
 import argparse
 import json
 import time
+import os
+import sys
 import multiprocessing as mp
 from multiprocessing import Process, Event
 
@@ -148,13 +150,29 @@ class TestExecutor():
             )
         except Exception as e:
             print(f"Resolution graph failed: {e}")
-            raise
+            # Always emit a parseable output file so batch runner never reports silent NoOutput
+            snippet_dir = '/'.join(file.split('/')[:-1])
+            fail_file = os.path.join(snippet_dir, "output_data_error.yml")
+            end_time = time.time()
+            with open(fail_file, "w") as out:
+                out.write("---\n")
+                out.write(f"python_version: {llm_eval.get('python_version', 'unknown')}\n")
+                out.write(f"start_time: {self.start_time}\n")
+                out.write("iterations:\n")
+                out.write("  iteration_1:\n")
+                out.write("    - python_module: {}\n")
+                out.write("    - error_type: NodeException\n")
+                out.write("    - error: |\n")
+                out.write(f"        {str(e)}\n")
+                out.write(f"end_time: {end_time}\n")
+                out.write(f"total_time: {end_time - self.start_time}\n")
+            return
         if success_event is not None and success_event.is_set():
             docker_helper = final_state.get("docker_helper")
             if docker_helper:
                 docker_helper.delete_container()
                 docker_helper.delete_image()
-            exit(0)
+            return
         file_to_open = final_state.get("file_to_open")
         llm_eval = final_state.get("llm_eval")
         docker_helper = final_state.get("docker_helper")
@@ -217,7 +235,7 @@ class TestExecutor():
             out_file.close()
             dockerHelper.delete_container()
             dockerHelper.delete_image()
-            exit(0)
+            return None
         else:
             return loop + 1
 
@@ -328,11 +346,19 @@ def main():
     for p in processes:
         p.join(timeout=1200)
     
+    worker_failed = False
     for p in processes:
         if p.is_alive():
             p.terminate()
+            worker_failed = True
         else:
-            print("Processing completed without the timeout")
+            print(f"Processing completed with exitcode={p.exitcode}")
+            if p.exitcode not in (0, None):
+                worker_failed = True
+
+    if worker_failed:
+        print("One or more workers failed or timed out.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -444,5 +444,14 @@ def run_resolution_graph(
         start_time=executor.start_time,
     )
     config = {"recursion_limit": executor.end_loop * 6}
-    final_state = graph.invoke(initial_state, config=config)
-    return final_state
+    try:
+        final_state = graph.invoke(initial_state, config=config)
+        return final_state
+    except Exception as e:
+        # Return structured failure state so caller can emit failure artifact.
+        failed = dict(initial_state)
+        failed["error_type"] = "GraphInvokeException"
+        failed["output"] = {"module": "graph", "version": None, "error": str(e)}
+        failed["run_complete"] = True
+        failed["strategy"] = "finalize"
+        return failed

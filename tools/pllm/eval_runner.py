@@ -97,6 +97,15 @@ def snapshot_output_mtimes(snippet_dir: str) -> Dict[str, float]:
     return mtimes
 
 
+def clear_output_files(snippet_dir: str) -> None:
+    for name in os.listdir(snippet_dir):
+        if name.startswith("output_data_") and name.endswith(".yml"):
+            try:
+                os.remove(os.path.join(snippet_dir, name))
+            except OSError:
+                pass
+
+
 def get_latest_output_file(snippet_dir: str, started_at: float, before_mtimes: Dict[str, float]) -> Optional[str]:
     candidates: List[Tuple[float, str]] = []
     for name in os.listdir(snippet_dir):
@@ -139,6 +148,8 @@ def main():
         snippet_id = os.path.basename(snippet_dir)
         print(f"[{idx}/{len(snippets)}] Running {snippet_id}")
 
+        # Avoid stale YAML files from previous runs affecting this row
+        clear_output_files(snippet_dir)
         started_at = time.time()
         before_mtimes = snapshot_output_mtimes(snippet_dir)
         cmd = [
@@ -160,6 +171,7 @@ def main():
 
         return_code = -1
         timed_out = False
+        stderr_tail = ""
         try:
             proc = subprocess.run(
                 cmd,
@@ -169,9 +181,11 @@ def main():
                 timeout=args.timeout_sec,
             )
             return_code = proc.returncode
+            stderr_tail = (proc.stderr or "")[-500:].replace("\n", "\\n")
         except subprocess.TimeoutExpired:
             timed_out = True
             return_code = 124
+            stderr_tail = "TimeoutExpired"
 
         elapsed = round(time.time() - started_at, 3)
         output_file = get_latest_output_file(snippet_dir, started_at, before_mtimes)
@@ -181,17 +195,26 @@ def main():
             "total_time": "",
         }
 
+        derived_error = parsed["last_error_type"]
+        if timed_out:
+            derived_error = "Timeout"
+        elif return_code != 0 and not derived_error:
+            derived_error = "WorkerCrash"
+        elif not derived_error:
+            derived_error = "NoOutput"
+
         rows.append(
             {
                 "snippet_id": snippet_id,
                 "snippet_file": snippet,
                 "output_file": output_file or "",
                 "python_version": parsed["python_version"],
-                "last_error_type": parsed["last_error_type"] or ("Timeout" if timed_out else "NoOutput"),
+                "last_error_type": derived_error,
                 "total_time": parsed["total_time"],
-                "success": is_success(parsed["last_error_type"]),
+                "success": (return_code == 0) and is_success(parsed["last_error_type"]),
                 "return_code": return_code,
                 "elapsed_sec": elapsed,
+                "stderr_tail": stderr_tail,
             }
         )
 
@@ -205,6 +228,7 @@ def main():
         "success",
         "return_code",
         "elapsed_sec",
+        "stderr_tail",
     ]
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
