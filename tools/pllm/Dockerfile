@@ -14,7 +14,7 @@ RUN groupadd -g $GID -o $UNAME && \
 
 # Store UNAME as environment variable for entrypoint
 ENV UNAME=$UNAME
-    
+
 # Install Python packages globally (available to all users)
 RUN python -m pip install --upgrade pip && \
     pip install datetime==5.5 && \
@@ -25,6 +25,8 @@ RUN python -m pip install --upgrade pip && \
     pip install docker==7.1.0 && \
     pip install ollama==0.2.0 && \
     pip install langchain==0.2.1 && \
+    pip install langchain-core==0.2.43 && \
+    pip install langgraph==0.2.0 && \
     pip install langchain-openai==0.1.9 && \
     pip install langchain-community==0.2.1 && \
     pip install llama-index-llms-ollama==0.1.5 && \
