@@ -167,16 +167,17 @@ class TestExecutor():
                 out.write(f"end_time: {end_time}\n")
                 out.write(f"total_time: {end_time - self.start_time}\n")
             return
-        if success_event is not None and success_event.is_set():
-            docker_helper = final_state.get("docker_helper")
-            if docker_helper:
-                docker_helper.delete_container()
-                docker_helper.delete_image()
-            return
         file_to_open = final_state.get("file_to_open")
         llm_eval = final_state.get("llm_eval")
         docker_helper = final_state.get("docker_helper")
         error_type = final_state.get("error_type", "Unknown")
+        # If another worker already succeeded, we may be missing output artifacts.
+        # In that case, clean up but only skip end_test when output files are absent.
+        if success_event is not None and success_event.is_set() and not (file_to_open and llm_eval and docker_helper):
+            if docker_helper:
+                docker_helper.delete_container()
+                docker_helper.delete_image()
+            return
         docker_output = final_state.get("docker_output", "")
         loop = final_state.get("loop", self.end_loop)
         if file_to_open and llm_eval and docker_helper:
@@ -314,7 +315,10 @@ def main():
     # If python_versions is empty then there was an issue with versions.
     # Give the lowest Python and work with this range
     if not python_versions:
-        python_versions = testExecutor.pypi.get_python_range(python_version=llm_eval['python_version'], range=testExecutor.search_range)
+        python_versions = testExecutor.pypi.get_python_range(
+            python_version=llm_eval['python_version'],
+            pyrange=testExecutor.search_range
+        )
     num_processes = (testExecutor.search_range * 2) + 1
     success_event = mp.Event()
 

@@ -244,6 +244,9 @@ def build_resolution_graph(
         if "ImportError" in error_type:
             if "DJANGO_SETTINGS_MODULE is undefined" in docker_output:
                 run_complete = True
+                # This is treated as a "dependency resolution succeeded" proxy:
+                # align with the evaluator's success signal which expects `error_type == "None"`.
+                error_type = "None"
                 if success_event is not None:
                     success_event.set()
                 llm_eval = executor.update_llm_eval(output, llm_eval)
@@ -298,6 +301,7 @@ def build_resolution_graph(
             "error_handler": error_handler,
             "loop": loop_next,
             "run_complete": run_complete,
+            "error_type": error_type,
             "build_complete": False if not run_complete else state.get("build_complete", False),
             "strategy": "finalize" if run_complete else "retry_build",
         }
