@@ -108,8 +108,8 @@ class PyPIQuery:
                 else:
                     selected_python.append(f'3.{8+i}')
                     selected_python.append(f'3.{8-i}')
-        elif not '2.7' in selected_python:
-            selected_python[-1] = '2.7' if len(selected_python) > 0 else selected_python.append('2.7')
+        # Do NOT replace a valid found version with '2.7'.
+        # If pyrange > 0 and 2.7 is useful, the natural index range will include it.
 
         if self.logging: print(selected_python)
         return selected_python

@@ -147,7 +147,9 @@ def build_resolution_graph(
         if _check_success_event():
             return {"run_complete": True}
         llm_eval = state["llm_eval"]
-        module_versions = ollama_helper.get_module_versions(llm_eval)
+        error_handler = state.get("error_handler", {})
+        error_modules = error_handler.get("error_modules", {}) if isinstance(error_handler, dict) else {}
+        module_versions = ollama_helper.get_module_versions(llm_eval, error_modules=error_modules)
         llm_eval = dict(llm_eval)
         llm_eval["python_modules"] = module_versions
         return {"llm_eval": llm_eval}

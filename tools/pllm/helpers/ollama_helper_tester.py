@@ -116,12 +116,15 @@ class OllamaHelper(OllamaHelperBase):
         return llm_eval
 
     # Loops through the modules and request a version for each
-    def get_module_versions(self, details):
+    # error_modules: dict mapping module name -> list of previously-tried (failing) versions
+    def get_module_versions(self, details, error_modules=None):
         modules = details['python_modules']
+        if error_modules is None:
+            error_modules = {}
 
         if len(modules) <= 0:
             return {}
-        
+
         # Define the parser
         parser = JsonOutputParser(pydantic_object=ModuleVersion)
 
@@ -136,11 +139,22 @@ class OllamaHelper(OllamaHelperBase):
                 for idx, module in enumerate(modules):
                     versions = self.read_python_file(f"{self.base_modules}/{module}_{details['python_version']}.txt")
 
+                    # Build a comma-separated list of previously-used versions for this module
+                    prev_used = []
+                    if module in error_modules:
+                        prev_used = [str(v) for v in error_modules[module]]
+                    # Also include the currently-installed version if present
+                    if isinstance(modules, dict) and module in modules and modules[module]:
+                        cur = str(modules[module])
+                        if cur not in prev_used:
+                            prev_used.append(cur)
+                    previous_str = ", ".join(prev_used) if prev_used else "none"
+
                     tp = "Infer a possible working version of the '{module}' module for Python {python_version}.\nReturn the information with the format {format_instructions}"
                     pv = {"version_details": versions, "module": module, "python_version": details['python_version'], "format_instructions": parser.get_format_instructions()}
                     if self.rag:
                         tp = "Given a comma separated list of '{version_details}', for the '{module}' module, from oldest to newest.\nSelect a recent version for us to use that isn't previously used: 'Previously used: {previous}, and return the information with the format {format_instructions}"
-                        pv = {"version_details": versions, "module": module, "previous": [], "format_instructions": parser.get_format_instructions()}
+                        pv = {"version_details": versions, "module": module, "previous": previous_str, "format_instructions": parser.get_format_instructions()}
 
                     prompt = PromptTemplate(
                         template=tp,
@@ -159,8 +173,7 @@ class OllamaHelper(OllamaHelperBase):
                 attempts -= 1
             
             if attempts <= 0:
-                print("Failed to find versions")
-                exit(0)
+                raise RuntimeError("Failed to find module versions after maximum attempts")
 
         print(updated_modules)
 
@@ -172,7 +185,7 @@ class OllamaHelper(OllamaHelperBase):
         loop = 5
         passed = False
         
-        while not passed or loop > 0:
+        while not passed and loop > 0:
             out = chain.invoke({})
             if self.logging: print(out)
             passed = self.pydantic_validate(pydantic_model, out)
@@ -564,11 +577,11 @@ class OllamaHelper(OllamaHelperBase):
         error_type = None
         output = None
         
-        if 'Could not find a version' in message:
-            if self.logging: print("Could not find a version")
+        if 'Could not find a version' in message or 'No matching distribution found' in message:
+            if self.logging: print("Could not find a version / no matching distribution")
             error_type = 'VersionNotFound'
             output = self.could_not_find_version(message, error_details, llm_eval)
-        elif 'dependency conflicts' in message:
+        elif 'dependency conflicts' in message or "pip's dependency resolver" in message or 'ResolutionImpossible' in message:
             if self.logging: print("Dependency conflict")
             error_type = 'DependencyConflict'
             output = self.dependency_conflict(message)
